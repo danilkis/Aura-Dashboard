@@ -9,8 +9,6 @@ export const fetchTodos = async (): Promise<Todo[] | null> => {
     console.error('[fetchTodos] Error:', error.message);
     return null;
   }
-
-  console.log('[fetchTodos] Fetched:', data);
   return data;
 };
 

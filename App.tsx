@@ -1,10 +1,10 @@
-import React, { useState, useMemo, useCallback, CSSProperties, useEffect, useRef } from 'react';
+import React, { useState, useCallback, CSSProperties, useEffect, useRef } from 'react';
 import { View, Todo, ToolCall, Email, ChatMessage, AssistantResponse, CustomWidgetConfig } from './types';
 import Sidebar from './components/Sidebar';
 import DeviceControlView from './components/HomeControls';
 import MailSummary from './components/MailSummary';
 import AssistantView from './components/AssistantView';
-import McpServer from './mcpServer';
+import { initMcp, callTool } from './mcpServer';
 import DashboardView from './DashboardView';
 import Onboarding from './Onboarding';
 import SettingsView from './components/SettingsView';
@@ -124,7 +124,7 @@ if ('speechSynthesis' in window && window.speechSynthesis.onvoiceschanged !== un
 
 
 const App: React.FC = () => {
-    const { todos, setTodos, addTodo, toggleTodo, deleteTodo } = useTodoStore(); // добавлено setTodos для загрузки из БД
+    const { todos, setTodos, addTodo, toggleTodo, deleteTodo, loadTodos } = useTodoStore(); // добавлено setTodos для загрузки из БД
 
     useEffect(() => {
         // При монтировании получаем список из Supabase и выставляем в стор
@@ -312,48 +312,61 @@ const App: React.FC = () => {
 
     const getEmails = useCallback(() => emails, [emails]);
     const getTodos = useCallback(() => todos, [todos]);
-    const mcpServer = useMemo(() => new McpServer({
-        addTodo: handleAddTodo, todoControl: handleTodoControl, mailControl: handleMailControl,
-        dashboardControl: handleDashboardControl, widgetRefine: handleWidgetRefine,
-        setLightState: setLightOn, setSpeakerState: setSpeakerPlaying, getTodos, getEmails,
-        resetWidgetStyles: handleResetWidgetStyles, addWidget: handleAddWidget, removeWidget: handleRemoveWidgetByTitle,
-    }), [handleAddTodo, handleTodoControl, handleMailControl, handleDashboardControl, handleWidgetRefine, getTodos, getEmails, handleResetWidgetStyles, handleAddWidget, handleRemoveWidgetByTitle]);
+
+    // Initialise Model Context Protocol server once
+    useEffect(() => {
+      initMcp({
+        addTodo: handleAddTodo,
+        todoControl: handleTodoControl,
+        mailControl: handleMailControl,
+        dashboardControl: handleDashboardControl,
+        widgetRefine: handleWidgetRefine,
+        setLightState: setLightOn,
+        setSpeakerState: setSpeakerPlaying,
+        getTodos,
+        getEmails,
+        loadTodos,
+        loadEmails,
+        resetWidgetStyles: handleResetWidgetStyles,
+        addWidget: handleAddWidget,
+        removeWidget: handleRemoveWidgetByTitle,
+      });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const processConversation = useCallback(async (currentHistory: ChatMessage[], audio?: { base64: string; mimeType: string }) => {
         setIsLoading(true);
         setApiError(null);
-    
+
         const modelToUse = audio ? 'gemini-2.5-flash' : modelName;
         const response = await getAssistantResponse(currentHistory, modelToUse, audio);
-    
+
         setIsLoading(false);
-    
+
         if (response.errorType === 'quota_exceeded' || response.displayText.includes('not available')) {
             setApiError(response.displayText);
             return;
         }
-    
+
         const modelMessage: ChatMessage = { role: 'model', text: response.displayText };
         const historyWithModelResponse = [...currentHistory, modelMessage];
         setMessages(historyWithModelResponse);
-    
+
         if (response.toolCalls && response.toolCalls.length > 0) {
             let historyForNextTurn = historyWithModelResponse;
             for (const call of response.toolCalls) {
                 try {
-                    const result = await mcpServer.processToolCall(call.name, call.args, response.language);
-                    console.log("MCP Result:", result.logMessage);
-                    if (result.followUpPrompt) {
-                        const followUpMessage: ChatMessage = { role: 'user', text: result.followUpPrompt };
-                        historyForNextTurn = [...historyForNextTurn, followUpMessage];
-                    }
+                    console.log(`[App] Calling tool: ${call.name} with args:`, call.args);
+                    const result = await callTool(call.name, call.args);
+                    console.log(`[App] Tool ${call.name} result:`, result);
                 } catch (error) {
-                    console.error("MCP Error:", error);
+                    console.error(`[App] MCP Error in tool ${call.name}:`, error);
                     // Optionally add an error message to the chat
                 }
             }
-            
+
             // If there were any follow-up prompts, continue the conversation recursively.
+            // (Removed followUpPrompt logic)
             if (historyForNextTurn.length > historyWithModelResponse.length) {
                 await processConversation(historyForNextTurn);
             } else {
@@ -368,7 +381,7 @@ const App: React.FC = () => {
                 await speak(response.displayText, response.language);
             }
         }
-    }, [mcpServer, modelName, isVoiceQuery]);
+    }, [modelName, isVoiceQuery]);
 
     const submitQuery = async (userMessage: ChatMessage, isVoice: boolean, audio?: { base64: string; mimeType: string }) => {
         setIsVoiceQuery(isVoice);

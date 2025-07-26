@@ -1,5 +1,6 @@
 import { GoogleGenAI, GenerateContentResponse, Type, Part } from "@google/genai";
 import { ChatMessage, AssistantResponse } from '../types';
+import { callTool } from '../mcpServer';
 
 // Add this for TypeScript support of import.meta.env
 interface ImportMeta {
@@ -189,13 +190,22 @@ export async function getAssistantResponse(
                 const jsonStr = text.substring(firstJsonChar, lastJsonChar + 1);
                 const parsedJson = JSON.parse(jsonStr);
                  if (parsedJson.displayText && parsedJson.toolCalls) {
+                    // Execute any requested tools immediately via MCP
+                    if (Array.isArray(parsedJson.toolCalls) && parsedJson.toolCalls.length) {
+                      for (const tc of parsedJson.toolCalls) {
+                        try {
+                          console.log(`[geminiService] Executing tool: ${tc.name} with args:`, tc.args);
+                          await callTool(tc.name, tc.args || {});
+                          console.log(`[geminiService] Tool ${tc.name} executed successfully.`);
+                        } catch (err) {
+                          console.error(`[geminiService] tool ${tc.name} execution error:`, err);
+                        }
+                      }
+                    }
                     return {
-                        displayText: parsedJson.displayText,
-                        language: parsedJson.language === 'ru-RU' ? 'ru-RU' : 'en-US',
-                        toolCalls: Array.isArray(parsedJson.toolCalls) ? parsedJson.toolCalls.map((call: any) => ({
-                            name: call.name || 'unknown',
-                            args: call.args || {}
-                        })) : [],
+                      displayText: parsedJson.displayText,
+                      language: parsedJson.language === 'ru-RU' ? 'ru-RU' : 'en-US',
+                      toolCalls: [],
                     };
                 }
             }
